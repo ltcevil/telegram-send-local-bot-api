@@ -190,7 +190,7 @@ async def send(*,
     settings = get_config_settings(conf)
     token = settings.token
     chat_id = settings.chat_id
-    bot = telegram.Bot(token, base_url="http://11.11.11.100:8081/bot")
+    bot = telegram.Bot(token, base_url="http://telegram-bot-api:8081/bot")
     # We let the user specify "text" as a parse mode to be more explicit about
     # the lack of formatting applied to the message, but "text" isn't a supported
     # parse_mode in python-telegram-bot. Instead, set the parse_mode to None
@@ -316,7 +316,7 @@ async def delete(message_ids, conf=None, timeout=30):
     settings = get_config_settings(conf)
     token = settings.token
     chat_id = settings.chat_id
-    bot = telegram.Bot(token, base_url="http://11.11.11.100:8081/bot")
+    bot = telegram.Bot(token, base_url="http://telegram-bot-api:8081/bot")
 
     if message_ids:
         for m in message_ids:
@@ -351,7 +351,7 @@ async def configure(conf, channel=False, group=False, fm_integration=False):
         token = input(markup(prompt, "magenta")).strip()
 
     try:
-        bot = telegram.Bot(token, base_url="http://11.11.11.100:8081/bot")
+        bot = telegram.Bot(token, base_url="http://telegram-bot-api:8081/bot")
         bot_details = await bot.get_me()
         bot_name = bot_details.username
     except Exception as e:
