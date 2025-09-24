@@ -190,7 +190,7 @@ async def send(*,
     settings = get_config_settings(conf)
     token = settings.token
     chat_id = settings.chat_id
-    bot = telegram.Bot(token, base_url="172.16.238.11:8081/bot")
+    bot = telegram.Bot(token, base_url="http://172.16.238.11:8081/bot")
     # We let the user specify "text" as a parse mode to be more explicit about
     # the lack of formatting applied to the message, but "text" isn't a supported
     # parse_mode in python-telegram-bot. Instead, set the parse_mode to None
