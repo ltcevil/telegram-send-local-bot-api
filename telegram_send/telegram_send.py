@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import configparser
+import json
 import re
 import sys
 from copy import deepcopy
@@ -71,6 +72,10 @@ async def run():
     parser.add_argument("--clean", help="Clean %(prog)s configuration files.", action="store_true")
     parser.add_argument("--timeout", help="Set the read timeout for network operations. (in seconds)",
                         type=float, default=30., action="store")
+    parser.add_argument("--json", help="Send message from JSON file", type=str)
+    parser.add_argument("--buttons", help="Send message with inline keyboard buttons (JSON format)", type=str)
+    parser.add_argument("--profile", help="Use specific profile from config", type=str)
+    parser.add_argument("--list-profiles", help="List available profiles", action="store_true")
     parser.add_argument("--version", action="version", version="%(prog)s {}".format(__version__))
     args = parser.parse_args()
 
@@ -95,6 +100,8 @@ async def run():
             sys.exit(1)
     elif args.clean:
         return clean()
+    elif args.list_profiles:
+        return list_profiles(conf[0])
 
     if args.parse_mode == "markdown":
         # Use the improved MarkdownV2 format by default
@@ -106,8 +113,37 @@ async def run():
             sys.exit(0)
         args.message = [message] + args.message
 
+    # Process JSON message
+    if args.json:
+        try:
+            with open(args.json, 'r') as f:
+                json_data = json.load(f)
+            if isinstance(json_data, dict):
+                if 'message' in json_data:
+                    args.message = [json_data['message']] + args.message
+                if 'buttons' in json_data:
+                    args.buttons = json.dumps(json_data['buttons'])
+                if 'parse_mode' in json_data:
+                    args.parse_mode = json_data['parse_mode']
+                if 'silent' in json_data:
+                    args.silent = json_data['silent']
+            elif isinstance(json_data, list):
+                args.message = json_data + args.message
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(markup(f"Error reading JSON file: {e}", "red"))
+            sys.exit(1)
+
+    # Parse buttons
+    buttons = None
+    if args.buttons:
+        try:
+            buttons = json.loads(args.buttons)
+        except json.JSONDecodeError as e:
+            print(markup(f"Error parsing buttons JSON: {e}", "red"))
+            sys.exit(1)
+
     try:
-        await delete(args.delete, conf=conf[0])
+        await delete(args.delete, conf=conf[0], profile=args.profile)
         message_ids = []
         for c in conf:
             message_ids += await send(
@@ -125,7 +161,9 @@ async def run():
                 audios=args.audio,
                 captions=args.caption,
                 locations=args.location,
-                timeout=args.timeout
+                timeout=args.timeout,
+                buttons=buttons,
+                profile=args.profile
             )
         if args.showids and message_ids:
             smessage_ids = [str(m) for m in message_ids]
@@ -150,7 +188,7 @@ async def run():
 async def send(*,
          messages=None, files=None, images=None, stickers=None, animations=None, videos=None, audios=None,
          captions=None, locations=None, conf=None, parse_mode=None, pre=False, silent=False,
-         disable_web_page_preview=False, timeout=30):
+         disable_web_page_preview=False, timeout=30, buttons=None, profile=None):
     """Send data over Telegram. All arguments are optional.
 
     Always use this function with explicit keyword arguments. So
@@ -186,8 +224,10 @@ async def send(*,
     silent (bool): Send silently without sound.
     disable_web_page_preview (bool): Disables web page previews for all links in the messages.
     timeout (int|float): The read timeout for network connections in seconds.
+    buttons (List): Inline keyboard buttons to send with messages.
+    profile (str): Profile name to use from config.
     """
-    settings = get_config_settings(conf)
+    settings = get_config_settings(conf, profile)
     token = settings.token
     chat_id = settings.chat_id
     bot = telegram.Bot(token, base_url="http://172.16.238.11:8081/bot")
@@ -207,6 +247,23 @@ async def send(*,
         "read_timeout": timeout,
     }
 
+    # Create inline keyboard if buttons are provided
+    reply_markup = None
+    if buttons:
+        keyboard = []
+        for row in buttons:
+            button_row = []
+            for button in row:
+                if isinstance(button, dict):
+                    if 'url' in button:
+                        button_row.append(telegram.InlineKeyboardButton(button['text'], url=button['url']))
+                    elif 'callback_data' in button:
+                        button_row.append(telegram.InlineKeyboardButton(button['text'], callback_data=button['callback_data']))
+            if button_row:
+                keyboard.append(button_row)
+        if keyboard:
+            reply_markup = telegram.InlineKeyboardMarkup(keyboard)
+
     if messages:
         async def send_message(message, parse_mode):
             if pre:
@@ -216,6 +273,7 @@ async def send(*,
                 text=message,
                 parse_mode=parse_mode,
                 disable_web_page_preview=disable_web_page_preview,
+                reply_markup=reply_markup,
                 **kwargs
             )
 
@@ -300,7 +358,7 @@ async def send(*,
     return message_ids
 
 
-async def delete(message_ids, conf=None, timeout=30):
+async def delete(message_ids, conf=None, timeout=30, profile=None):
     """Delete messages that have been sent before over Telegram. Restrictions given by Telegram API apply.
 
     Note that Telegram restricts this to messages which have been sent during the last 48 hours.
@@ -312,8 +370,9 @@ async def delete(message_ids, conf=None, timeout=30):
     conf (str): Path of configuration file to use. Will use the default config if not specified.
                 `~` expands to user's home directory.
     timeout (int|float): The read timeout for network connections in seconds.
+    profile (str): Profile name to use from config.
     """
-    settings = get_config_settings(conf)
+    settings = get_config_settings(conf, profile)
     token = settings.token
     chat_id = settings.chat_id
     bot = telegram.Bot(token, base_url="http://telegram-bot-api:8081/bot")
@@ -326,7 +385,7 @@ async def delete(message_ids, conf=None, timeout=30):
                 warn(markup(f"Deleting message with id={m} failed: {e}", "red"))
 
 
-async def configure(conf, channel=False, group=False, fm_integration=False):
+async def configure(conf, channel=False, group=False, fm_integration=False, profile=None):
     """Guide user to set up the bot, saves configuration at `conf`.
 
     # Arguments
@@ -336,6 +395,7 @@ async def configure(conf, channel=False, group=False, fm_integration=False):
     channel (Optional[bool]): Configure a channel.
     group (Optional[bool]): Configure a group.
     fm_integration (Optional[bool]): Setup file manager integration.
+    profile (Optional[str]): Profile name to configure.
     """
     conf = expanduser(conf) if conf else get_config_path()
     prompt = "❯ " if not sys.platform.startswith("win32") else "> "
@@ -357,7 +417,7 @@ async def configure(conf, channel=False, group=False, fm_integration=False):
     except Exception as e:
         print("Error: {}".format(e))
         print(markup("Something went wrong, please try again.\n", "red"))
-        return await configure(conf, channel=channel, group=group, fm_integration=fm_integration)
+        return await configure(conf, channel=channel, group=group, fm_integration=fm_integration, profile=profile)
 
     print("Connected with {}.\n".format(markup(bot_name, "cyan")))
 
@@ -436,7 +496,16 @@ async def configure(conf, channel=False, group=False, fm_integration=False):
         await bot.send_message(chat_id=chat_id, text=ball + " " + m[0] + ball + m[1])
 
     config = configparser.ConfigParser()
-    config["telegram"] = {"TOKEN": token, "chat_id": chat_id}
+    if exists(conf):
+        config.read(conf)
+    
+    section_name = profile if profile else "telegram"
+    if not config.has_section(section_name):
+        config.add_section(section_name)
+    
+    config[section_name]["TOKEN"] = token
+    config[section_name]["chat_id"] = str(chat_id)
+    
     conf_dir = dirname(conf)
     if conf_dir:
         makedirs(conf_dir, exist_ok=True)
@@ -445,6 +514,27 @@ async def configure(conf, channel=False, group=False, fm_integration=False):
     if fm_integration:
         if not sys.platform.startswith("win32"):
             return integrate_file_manager()
+
+
+def list_profiles(conf=None):
+    """List all available profiles in the configuration file."""
+    conf = expanduser(conf) if conf else get_config_path()
+    if not exists(conf):
+        print(markup("No configuration file found.", "red"))
+        return
+    
+    config = configparser.ConfigParser()
+    config.read(conf)
+    
+    profiles = [section for section in config.sections()]
+    if not profiles:
+        print(markup("No profiles found in configuration.", "red"))
+        return
+    
+    print("Available profiles:")
+    for profile in profiles:
+        chat_id = config.get(profile, "chat_id", fallback="N/A")
+        print(f"  {markup(profile, 'cyan')}: {chat_id}")
 
 
 def integrate_file_manager(clean=False):
@@ -510,16 +600,25 @@ class Settings(NamedTuple):
     chat_id: Union[int, str]
 
 
-def get_config_settings(conf=None) -> Settings:
+def get_config_settings(conf=None, profile=None) -> Settings:
     conf = expanduser(conf) if conf else get_config_path()
     config = configparser.ConfigParser()
-    if not config.read(conf) or not config.has_section("telegram"):
+    if not config.read(conf):
         raise ConfigError("Config not found")
-    missing_options = set(["token", "chat_id"]) - set(config.options("telegram"))
+    
+    section_name = profile if profile else "telegram"
+    if not config.has_section(section_name):
+        if profile:
+            raise ConfigError(f"Profile '{profile}' not found in config")
+        else:
+            raise ConfigError("Config not found")
+    
+    missing_options = set(["token", "chat_id"]) - set(config.options(section_name))
     if len(missing_options) > 0:
         raise ConfigError("Missing options in config: {}".format(", ".join(missing_options)))
-    token = config.get("telegram", "token")
-    chat_id = config.get("telegram", "chat_id")
+    
+    token = config.get(section_name, "token")
+    chat_id = config.get(section_name, "chat_id")
     if chat_id.isdigit():
         chat_id = int(chat_id)
     return Settings(token=token, chat_id=chat_id)
@@ -527,4 +626,3 @@ def get_config_settings(conf=None) -> Settings:
 
 if __name__ == "__main__":
     main()
-
